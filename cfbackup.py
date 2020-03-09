@@ -24,8 +24,8 @@ class CFBackup:
     def run(self):
         if 'export' in self.config and 'zones' in self.config['export']:
             conf = {
-                'zone_json': self.config['export']['zones'].get('json'),
-                'zone_yaml': self.config['export']['zones'].get('yaml')
+                f'zone_{row}': self.config['export']['zones'].get(row)
+                for row in ['json', 'yaml', 'bind']
             }
 
             if any([conf[row] is not None for row in conf.keys()]):
@@ -49,28 +49,35 @@ class CFBackup:
                     'records': []
                 }
 
-                records_page_number = 0
-                while True:
-                    records_page_number += 1
-                    records_params = {'per_page': 50, 'page': records_page_number}
-                    records_results = self.cf.zones.dns_records.get(zone['id'], params=records_params)
-                    records_total_pages = records_results['result_info']['total_pages']
+                if kwargs.get('zone_json') or kwargs.get('zone_yaml'):
+                    records_page_number = 0
+                    while True:
+                        records_page_number += 1
+                        records_params = {'per_page': 50, 'page': records_page_number}
+                        records_results = self.cf.zones.dns_records.get(zone['id'], params=records_params)
+                        records_total_pages = records_results['result_info']['total_pages']
 
-                    for record in records_results['result']:
-                        data['records'].append(record)
+                        for record in records_results['result']:
+                            data['records'].append(record)
 
-                    if records_total_pages == 0 or records_page_number == records_total_pages:
-                        break
+                        if records_total_pages == 0 or records_page_number == records_total_pages:
+                            break
 
-                if kwargs.get('zone_json'):
-                    path = f'{kwargs["zone_json"]}/{zone["name"]}-{zone["id"]}.json.gz'
+                    if kwargs.get('zone_json'):
+                        path = f'{kwargs["zone_json"]}/{zone["name"]}-{zone["id"]}.json.gz'
+                        with gzip.open(path, 'wb') as fd:
+                            fd.write(json.dumps(data).encode('utf-8'))
+
+                    if kwargs.get('zone_yaml'):
+                        path = f'{kwargs["zone_yaml"]}/{zone["name"]}-{zone["id"]}.yaml.gz'
+                        with gzip.open(path, 'wb') as fd:
+                            fd.write(yaml.dump(data).encode('utf-8'))
+
+                if kwargs.get('zone_bind'):
+                    dns_records = self.cf.zones.dns_records.export.get(zone['id'])
+                    path = f'{kwargs["zone_bind"]}/{zone["name"]}-{zone["id"]}.db.gz'
                     with gzip.open(path, 'wb') as fd:
-                        fd.write(json.dumps(data).encode('utf-8'))
-
-                if kwargs.get('zone_yaml'):
-                    path = f'{kwargs["zone_yaml"]}/{zone["name"]}-{zone["id"]}.yaml.gz'
-                    with gzip.open(path, 'wb') as fd:
-                        fd.write(yaml.dump(data).encode('utf-8'))
+                        fd.write(dns_records['result'].encode('utf-8'))
 
             if total_pages == 0 or page_number == total_pages:
                 break

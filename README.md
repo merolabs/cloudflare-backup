@@ -12,6 +12,7 @@ This simple application can make a backup from Cloudflare accounts.
 Supported export formats:
 * json
 * yaml
+* bind
 
 ### Example config
 
@@ -22,4 +23,5 @@ export:
   zones:
     json: "/backup/cloudflare/zones/json"
     yaml: "/backup/cloudflare/zones/yaml"
+    bind: "/backup/cloudflare/zones/bind"
 ```
