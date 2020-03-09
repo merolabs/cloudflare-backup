@@ -21,7 +21,11 @@ cloudflare:
   token: "<you access token>"
 export:
   zones:
-    json: "/backup/cloudflare/zones/json"
-    yaml: "/backup/cloudflare/zones/yaml"
-    bind: "/backup/cloudflare/zones/bind"
+    json:
+      path: "/var/backup/cloudflare/zones/json"
+    yaml:
+      path: "/var/backup/cloudflare/zones/yaml"
+    bind:
+      compress: false
+      path: "/var/backup/cloudflare/zones/bind"
 ```
