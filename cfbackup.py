@@ -16,6 +16,9 @@ class CFBackup:
         )
 
         self.config = self.load_config(config_path)
+        if not self.config['cloudflare'].get('raw'):
+            self.config['cloudflare']['raw'] = True
+
         self.cf = CloudFlare.CloudFlare(**self.config['cloudflare'])
 
     def run(self):
@@ -33,24 +36,44 @@ class CFBackup:
             return yaml.safe_load(stream)
 
     def export_zones(self, **kwargs):
-        for zone in self.cf.zones.get():
-            logging.info(f'Exporting zone. Zone: {zone["name"]}; ID: {zone["id"]}')
-            data = {
-                'zone': zone,
-                'records': [
-                    row for row in self.cf.zones.dns_records.get(zone['id'])
-                ]
-            }
+        page_number = 0
+        while True:
+            page_number += 1
+            zones_results = self.cf.zones.get(params={'per_page': 50, 'page': page_number})
+            total_pages = zones_results['result_info']['total_pages']
 
-            if kwargs.get('zone_json'):
-                path = f'{kwargs["zone_json"]}/{zone["name"]}-{zone["id"]}.json.gz'
-                with gzip.open(path, 'wb') as fd:
-                    fd.write(json.dumps(data).encode('utf-8'))
+            for zone in zones_results['result']:
+                logging.info(f'Exporting zone. Zone: {zone["name"]}; ID: {zone["id"]}')
+                data = {
+                    'zone': zone,
+                    'records': []
+                }
 
-            if kwargs.get('zone_yaml'):
-                path = f'{kwargs["zone_yaml"]}/{zone["name"]}-{zone["id"]}.yaml.gz'
-                with gzip.open(path, 'wb') as fd:
-                    fd.write(yaml.dump(data).encode('utf-8'))
+                records_page_number = 0
+                while True:
+                    records_page_number += 1
+                    records_params = {'per_page': 50, 'page': records_page_number}
+                    records_results = self.cf.zones.dns_records.get(zone['id'], params=records_params)
+                    records_total_pages = records_results['result_info']['total_pages']
+
+                    for record in records_results['result']:
+                        data['records'].append(record)
+
+                    if records_total_pages == 0 or records_page_number == records_total_pages:
+                        break
+
+                if kwargs.get('zone_json'):
+                    path = f'{kwargs["zone_json"]}/{zone["name"]}-{zone["id"]}.json.gz'
+                    with gzip.open(path, 'wb') as fd:
+                        fd.write(json.dumps(data).encode('utf-8'))
+
+                if kwargs.get('zone_yaml'):
+                    path = f'{kwargs["zone_yaml"]}/{zone["name"]}-{zone["id"]}.yaml.gz'
+                    with gzip.open(path, 'wb') as fd:
+                        fd.write(yaml.dump(data).encode('utf-8'))
+
+            if total_pages == 0 or page_number == total_pages:
+                break
 
 
 if __name__ == '__main__':
