@@ -21,86 +21,148 @@ class CFBackup:
 
         self.cf = CloudFlare.CloudFlare(**self.config['cloudflare'])
 
-    def run(self) -> None:
+        self.zone_extra = [
+            'keyless_certificates',
+            'custom_pages',
+            'pagerules',
+            'settings'
+        ]
+
+        self.zone_extra_firewall = [
+            'access_rules',
+            'ua_rules'
+        ]
+
+    def run(self, zone=None) -> None:
         if self.config.get('export') and self.config['export'].get('zones'):
+            zones = self.config['export']['zones']
+            zones_extra = zones.get('extra')
+
             formats = ['json', 'yaml', 'bind']
+
             conf = {
-                f'zone_{row}': {
-                    'path': self.config['export']['zones'][row].get('path'),
-                    'file_ext': self.config['export']['zones'][row].get('file_ext', row),
-                    'compress': self.config['export']['zones'][row].get('compress', True),
-                } for row in formats if self.config['export']['zones'].get(row)
+                f'zone_format_{row}': {
+                    'path': zones[row].get('path'),
+                    'file_ext': zones[row].get('file_ext', row),
+                    'compress': zones[row].get('compress', True),
+                } for row in formats if zones.get(row)
             }
 
-            if conf:
-                self.export_zones(**conf)
+            if zones_extra:
+                conf.update({
+                    f'zone_extra_{row}': zones_extra.get(row)
+                    for row in self.zone_extra
+                })
+                if zones_extra.get('firewall'):
+                    conf.update({
+                        f'zone_extra_firewall_{row}': zones_extra['firewall'].get(row)
+                        for row in self.zone_extra_firewall
+                    })
+
+            conf['limit_zone'] = zone
+
+            self.export_zones(**conf)
 
     def load_config(self, config_path: str) -> str:
         with open(config_path, 'r') as stream:
             return yaml.safe_load(stream)
 
     def export_zones(self, **kwargs) -> None:
-        zone_json = kwargs.get('zone_json')
-        zone_yaml = kwargs.get('zone_yaml')
-        zone_bind = kwargs.get('zone_bind')
+        zone_json = kwargs.get('zone_format_json')
+        zone_yaml = kwargs.get('zone_format_yaml')
+        zone_bind = kwargs.get('zone_format_bind')
 
-        page_number = 0
-        while True:
-            page_number += 1
-            zones_results = self.cf.zones.get(params={'per_page': 50, 'page': page_number})
-            total_pages = zones_results['result_info']['total_pages']
+        for zone in self._extract_query(self.cf.zones, zone_name=kwargs.get('limit_zone')):
+            logging.info(f'Exporting zone. Zone: {zone["name"]}; ID: {zone["id"]}')
 
-            for zone in zones_results['result']:
-                logging.info(f'Exporting zone. Zone: {zone["name"]}; ID: {zone["id"]}')
-                data = {
-                    'zone': zone,
-                    'records': []
-                }
+            data = {
+                'zone': zone,
+                'firewall': {}
+            }
 
-                save_kwargs = {
-                    'zone_name': zone['name'],
-                    'zone_id': zone['id']
-                }
+            save_kwargs = {
+                'zone_name': zone['name'],
+                'zone_id': zone['id']
+            }
 
-                if zone_json or zone_yaml:
-                    data['records'] = self.export_zone_records(zone['id'])
+            if zone_json or zone_yaml:
+                data.update({
+                    'records': self._extract_query(
+                        self.cf.zones.dns_records,
+                        zone['id']
+                    )
+                })
 
-                    if zone_json:
-                        save_kwargs.update(zone_json)
-                        save_kwargs['data'] = json.dumps(data)
-                        self.save_zone_file(**save_kwargs)
+                for extra in self.zone_extra:
+                    if kwargs.get(f'zone_extra_{extra}'):
+                        data.update({
+                            extra: self._extract_query(
+                                getattr(self.cf.zones, extra),
+                                zone['id']
+                            )
+                        })
 
-                    if zone_yaml:
-                        save_kwargs.update(zone_yaml)
-                        save_kwargs['data'] = yaml.dump(data)
-                        self.save_zone_file(**save_kwargs)
+                if kwargs.get('zone_extra_firewall_access_rules'):
+                    data['firewall']['access_rules'] = self._extract_query(
+                        self.cf.zones.firewall.access_rules.rules,
+                        zone['id']
+                    )
 
-                if zone_bind:
-                    dns_records = self.cf.zones.dns_records.export.get(zone['id'])
-                    save_kwargs.update(zone_bind)
-                    save_kwargs['data'] = dns_records['result']
+                if kwargs.get('zone_extra_firewall_ua_rules'):
+                    data['firewall']['ua_rules'] = self._extract_query(
+                        self.cf.zones.firewall.ua_rules,
+                        zone['id']
+                    )
+
+                if zone_json:
+                    save_kwargs.update(zone_json)
+                    save_kwargs['data'] = json.dumps(data)
                     self.save_zone_file(**save_kwargs)
 
-            if total_pages == 0 or page_number == total_pages:
-                break
+                if zone_yaml:
+                    save_kwargs.update(zone_yaml)
+                    save_kwargs['data'] = yaml.dump(data)
+                    self.save_zone_file(**save_kwargs)
 
-    def export_zone_records(self, zone_id: str) -> list:
-        records = []
-        records_page_number = 0
+            if zone_bind:
+                save_kwargs.update(zone_bind)
+                save_kwargs['data'] = self._extract_query(
+                    self.cf.zones.dns_records.export,
+                    zone['id']
+                )
+                self.save_zone_file(**save_kwargs)
+
+    @staticmethod
+    def _extract_query(func, zone_id=None, zone_name=None):
+        rows = []
+        page_number = 0
+
         while True:
-            records_page_number += 1
-            records_params = {'per_page': 50, 'page': records_page_number}
-            records_results = self.cf.zones.dns_records.get(zone_id, params=records_params)
-            records_total_pages = records_results['result_info']['total_pages']
+            page_number += 1
+            params = {'per_page': 50, 'page': page_number}
+            if zone_name:
+                params['name'] = zone_name
 
-            for record in records_results['result']:
-                records.append(record)
+            if zone_id:
+                results = func.get(zone_id, params=params)
+            else:
+                results = func.get(params=params)
 
-            if records_total_pages == 0 or records_page_number == records_total_pages:
+            if type(results['result']) == list:
+                rows.extend(results['result'])
+            else:
+                return results['result']
+
+            if results.get('result_info'):
+                total_pages = results['result_info']['total_pages']
+
+                if total_pages == 0 or page_number == total_pages:
+                    break
+
+            else:
                 break
 
-        return records
-
+        return rows
 
     @staticmethod
     def save_zone_file(path: str, zone_name: str, zone_id: str, file_ext: str, data: bytes, compress: bool) -> None:
@@ -125,6 +187,7 @@ class CFBackup:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Cloudflare Backup')
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
+    parser.add_argument('--zone', type=str, help='Limit to specific zone')
     args = parser.parse_args()
 
-    CFBackup(args.config).run()
+    CFBackup(args.config).run(args.zone)

@@ -2,6 +2,18 @@
 
 This simple application can make a backup from Cloudflare accounts.
 
+Supported exports:
+
+* Zone
+  * DNS Records
+  * Settings
+  * PageRules
+  * Custom Pages
+  * Keyless Certificates
+  * Firewall
+    * Access
+    * UserAgent Rules
+
 ## Requirements
 
 * Python version - 3.6+.
@@ -9,7 +21,7 @@ This simple application can make a backup from Cloudflare accounts.
 
 ## Config
 
-Supported export formats:
+Supported zone export formats:
 * json
 * yaml
 * bind
@@ -18,9 +30,17 @@ Supported export formats:
 
 ```yaml
 cloudflare:
-  token: "<you access token>"
+  token: "<your access token>"
 export:
   zones:
+    extra:
+      keyless_certificates: true
+      custom_pages: true
+      pagerules: true
+      settings: true
+      firewall:
+        access_rules: true
+        ua_rules: true
     json:
       path: "/var/backup/cloudflare/zones/json"
     yaml:
